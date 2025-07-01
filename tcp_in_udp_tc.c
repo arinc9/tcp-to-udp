@@ -32,6 +32,10 @@ enum side {
 	SERVER,
 	CLIENT,
 };
+enum direction {
+	EGRESS,
+	INGRESS,
+};
 
 /*******************************************
  ** parse_*hdr helpers from XDP tutorials **
@@ -349,8 +353,7 @@ out:
 	return;
 }
 
-SEC("tc_client_egress")
-int client_egress(struct __sk_buff *skb)
+int tc_action(struct __sk_buff *skb, enum direction dir, enum side side)
 {
 	void *data_end = (void *)(long)skb->data_end;
 	void *data = (void *)(long)skb->data;
@@ -369,92 +372,43 @@ int client_egress(struct __sk_buff *skb)
 		goto out;
 	}
 
-	if (ip_type == IPPROTO_TCP)
-		tcp_to_udp(skb, &nh, iphdr, ipv6hdr, CLIENT);
+	switch (dir) {
+	case EGRESS:
+		if (ip_type == IPPROTO_TCP)
+			tcp_to_udp(skb, &nh, iphdr, ipv6hdr, side);
+		break;
+	case INGRESS:
+		if (ip_type == IPPROTO_UDP)
+			udp_to_tcp(skb, &nh, iphdr, ipv6hdr, side);
+		break;
+	}
 
 out:
 	return ret;
+}
+
+SEC("tc_client_egress")
+int client_egress(struct __sk_buff *skb)
+{
+	return tc_action(skb, EGRESS, CLIENT);
 }
 
 SEC("tc_client_ingress")
 int client_ingress(struct __sk_buff *skb)
 {
-	void *data_end = (void *)(long)skb->data_end;
-	void *data = (void *)(long)skb->data;
-	struct hdr_cursor nh = { .pos = data };
-	int eth_type, ip_type, ret = TC_ACT_OK;
-	struct ipv6hdr *ipv6hdr = NULL;
-	struct iphdr *iphdr = NULL;
-	struct ethhdr *eth;
-
-	eth_type = parse_ethhdr(&nh, data_end, &eth);
-	if (eth_type == bpf_htons(ETH_P_IP)) {
-		ip_type = parse_iphdr(&nh, data_end, &iphdr);
-	} else if (eth_type == bpf_htons(ETH_P_IPV6)) {
-		ip_type = parse_ip6hdr(&nh, data_end, &ipv6hdr);
-	} else {
-		goto out;
-	}
-
-	if (ip_type == IPPROTO_UDP)
-		udp_to_tcp(skb, &nh, iphdr, ipv6hdr, CLIENT);
-
-out:
-	return ret;
+	return tc_action(skb, INGRESS, CLIENT);
 }
 
 SEC("tc_server_egress")
 int server_egress(struct __sk_buff *skb)
 {
-	void *data_end = (void *)(long)skb->data_end;
-	void *data = (void *)(long)skb->data;
-	struct hdr_cursor nh = { .pos = data };
-	int eth_type, ip_type, ret = TC_ACT_OK;
-	struct ipv6hdr *ipv6hdr = NULL;
-	struct iphdr *iphdr = NULL;
-	struct ethhdr *eth;
-
-	eth_type = parse_ethhdr(&nh, data_end, &eth);
-	if (eth_type == bpf_htons(ETH_P_IP)) {
-		ip_type = parse_iphdr(&nh, data_end, &iphdr);
-	} else if (eth_type == bpf_htons(ETH_P_IPV6)) {
-		ip_type = parse_ip6hdr(&nh, data_end, &ipv6hdr);
-	} else {
-		goto out;
-	}
-
-	if (ip_type == IPPROTO_TCP)
-		tcp_to_udp(skb, &nh, iphdr, ipv6hdr, SERVER);
-
-out:
-	return ret;
+	return tc_action(skb, EGRESS, SERVER);
 }
 
 SEC("tc_server_ingress")
 int server_ingress(struct __sk_buff *skb)
 {
-	void *data_end = (void *)(long)skb->data_end;
-	void *data = (void *)(long)skb->data;
-	struct hdr_cursor nh = { .pos = data };
-	int eth_type, ip_type, ret = TC_ACT_OK;
-	struct ipv6hdr *ipv6hdr = NULL;
-	struct iphdr *iphdr = NULL;
-	struct ethhdr *eth;
-
-	eth_type = parse_ethhdr(&nh, data_end, &eth);
-	if (eth_type == bpf_htons(ETH_P_IP)) {
-		ip_type = parse_iphdr(&nh, data_end, &iphdr);
-	} else if (eth_type == bpf_htons(ETH_P_IPV6)) {
-		ip_type = parse_ip6hdr(&nh, data_end, &ipv6hdr);
-	} else {
-		goto out;
-	}
-
-	if (ip_type == IPPROTO_UDP)
-		udp_to_tcp(skb, &nh, iphdr, ipv6hdr, SERVER);
-
-out:
-	return ret;
+	return tc_action(skb, INGRESS, SERVER);
 }
 char _license[] SEC("license") = "GPL";
 
