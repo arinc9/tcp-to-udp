@@ -43,8 +43,8 @@ tc_client()
 	ip netns exec "${ns}" sh -c "mount -t debugfs none /sys/kernel/debug && cat /sys/kernel/debug/tracing/trace_pipe" &
 
 	tc -n "${ns}" qdisc add dev "${iface}" clsact
-	tc -n "${ns}" filter add dev "${iface}" egress  bpf da obj tcp_in_udp_tc.o sec tc_egress
-	tc -n "${ns}" filter add dev "${iface}" ingress bpf da obj tcp_in_udp_tc.o sec tc_ingress
+	tc -n "${ns}" filter add dev "${iface}" egress  bpf da obj tcp_in_udp_tc.o sec tc_client_egress
+	tc -n "${ns}" filter add dev "${iface}" ingress bpf da obj tcp_in_udp_tc.o sec tc_client_ingress
 
 	tc -n "${ns}" filter show dev "${iface}" egress
 	tc -n "${ns}" filter show dev "${iface}" ingress
@@ -60,8 +60,8 @@ tc_server()
 	ip netns exec "${ns}" sh -c "mount -t debugfs none /sys/kernel/debug && cat /sys/kernel/debug/tracing/trace_pipe" &
 
 	tc -n "${ns}" qdisc add dev "${iface}" clsact
-	tc -n "${ns}" filter add dev "${iface}" egress  bpf da obj tcp_in_udp_tc.o sec tc_egress
-	tc -n "${ns}" filter add dev "${iface}" ingress bpf da obj tcp_in_udp_tc.o sec tc_ingress
+	tc -n "${ns}" filter add dev "${iface}" egress  bpf da obj tcp_in_udp_tc.o sec tc_server_egress
+	tc -n "${ns}" filter add dev "${iface}" ingress bpf da obj tcp_in_udp_tc.o sec tc_server_ingress
 
 	tc -n "${ns}" filter show dev "${iface}" egress
 	tc -n "${ns}" filter show dev "${iface}" ingress
