@@ -27,7 +27,8 @@ struct hdr_cursor {
 };
 
 __u16 PORT = 5201;
-enum {
+
+enum side {
 	SERVER,
 	CLIENT,
 };
@@ -155,7 +156,7 @@ static __always_inline int parse_udphdr(struct hdr_cursor *nh,
 
 static __always_inline void
 udp_to_tcp(struct __sk_buff *skb, struct hdr_cursor *nh, struct iphdr *iphdr,
-	   struct ipv6hdr *ipv6hdr, int operation)
+	   struct ipv6hdr *ipv6hdr, enum side side)
 {
 	void *data_end = (void *)(long)skb->data_end;
 	void *data = (void *)(long)skb->data;
@@ -167,7 +168,7 @@ udp_to_tcp(struct __sk_buff *skb, struct hdr_cursor *nh, struct iphdr *iphdr,
 	if (parse_udphdr(nh, data_end, (struct udphdr**)&tuhdr) < 0)
 		goto out;
 
-	switch (operation) {
+	switch (side) {
 	case SERVER:
 		if (tuhdr->udphdr.dest != bpf_htons(PORT))
 			goto out;
@@ -240,7 +241,7 @@ out:
 
 static __always_inline void
 tcp_to_udp(struct __sk_buff *skb, struct hdr_cursor *nh, struct iphdr *iphdr,
-	   struct ipv6hdr *ipv6hdr, int operation)
+	   struct ipv6hdr *ipv6hdr, enum side side)
 {
 	void *data_end = (void *)(long)skb->data_end;
 	void *data = (void *)(long)skb->data;
@@ -254,7 +255,7 @@ tcp_to_udp(struct __sk_buff *skb, struct hdr_cursor *nh, struct iphdr *iphdr,
 	if (parse_tcphdr(nh, data_end, &tcphdr) < 0)
 		goto out;
 
-	switch (operation) {
+	switch (side) {
 	case SERVER:
 		if (tcphdr->source != bpf_htons(PORT))
 			goto out;
