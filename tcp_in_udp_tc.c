@@ -13,11 +13,21 @@
 struct tinuhdr {
 	struct udphdr udphdr;
 	__be32 ack_seq;
-	__be32 doff_flags_window;
+#if defined(__LITTLE_ENDIAN_BITFIELD)
+	__u16 res1:4,
+	    doff:4, fin:1, syn:1, rst:1, psh:1, ack:1, urg:1, ece:1, cwr:1;
+#elif defined(__BIG_ENDIAN_BITFIELD)
+	__u16 doff:4,
+	    res1:4, cwr:1, ece:1, urg:1, ack:1, psh:1, rst:1, syn:1, fin:1;
+#else
+#error	"Adjust your <asm/byteorder.h> defines"
+#endif
+	__be16 window;
 	__be32 seq;
 };
 
-__u16 PORT = 5201;
+#define TCP_MAX_HEADER	60
+#define PORT		5201
 
 enum side {
 	SERVER,
@@ -36,36 +46,28 @@ static __always_inline void tinu_to_tcp(struct __sk_buff *skb_addr,
 					void *data_hdr_end_addr)
 {
 	int tinu_hdr_len = data_hdr_end_addr - (void *)tinuhdr_addr;
-	void *data_end_addr = (void *)(long)skb_addr->data_end;
 	void *data_addr = (void *)(long)skb_addr->data;
+	char buffer[TCP_MAX_HEADER];
 	struct tcphdr *tcphdr_addr;
 	__u8 proto = IPPROTO_TCP;
-	char buffer[60];
 
-	/* Copy TCP-in-UDP header to tcphdr_addr variable and replace the
-	 * relevant fields.
-	 */
 	bpf_skb_load_bytes(skb_addr, (void *)tinuhdr_addr - data_addr, buffer,
 			   tinu_hdr_len);
 	tcphdr_addr = (struct tcphdr *)buffer;
 	tcphdr_addr->seq = tinuhdr_addr->seq;
 	tcphdr_addr->urg_ptr = 0;
 	bpf_skb_store_bytes(skb_addr, (void *)tinuhdr_addr - data_addr,
-			    tcphdr_addr, tinu_hdr_len, 0);
+			    buffer, tinu_hdr_len, 0);
 
-	/* Change protocol from UDP to TCP on the IP header. Recompute packet's
-	 * checksum.
-	 */
+	/* Change protocol from UDP to TCP on the IP header. */
 	if (iphdr_addr) {
 		bpf_skb_store_bytes(skb_addr,
-				    ((void *)iphdr_addr - data_addr) +
-				    offsetof(struct iphdr, protocol), &proto,
-				    sizeof(proto), BPF_F_RECOMPUTE_CSUM);
+				    (void *)&iphdr_addr->protocol - data_addr,
+				    &proto, sizeof(proto), 0);
 	} else if (ipv6hdr_addr) {
 		bpf_skb_store_bytes(skb_addr,
-				    ((void *)ipv6hdr_addr - data_addr) +
-				    offsetof(struct ipv6hdr, nexthdr), &proto,
-				    sizeof(proto), BPF_F_RECOMPUTE_CSUM);
+				    (void *)&ipv6hdr_addr->nexthdr -
+				    data_addr, &proto, sizeof(proto), 0);
 	}
 }
 
@@ -76,38 +78,35 @@ static __always_inline void tcp_to_tinu(struct __sk_buff *skb_addr,
 					void *data_hdr_end_addr)
 {
 	int tcp_hdr_len = data_hdr_end_addr - (void *)tcphdr_addr;
-	void *data_end_addr = (void *)(long)skb_addr->data_end;
-	__be16 tinu_len = data_end_addr - (void *)tcphdr_addr;
 	void *data_addr = (void *)(long)skb_addr->data;
 	struct tinuhdr *tinuhdr_addr;
+	char buffer[TCP_MAX_HEADER];
 	__u8 proto = IPPROTO_UDP;
-	char buffer[60];
 
-	/* Copy TCP header to tinuhdr_addr variable and replace the relevant
-	 * fields.
-	 */
 	bpf_skb_load_bytes(skb_addr, (void *)tcphdr_addr - data_addr, buffer,
 			   tcp_hdr_len);
 	tinuhdr_addr = (struct tinuhdr *)buffer;
-	tinuhdr_addr->udphdr.len = bpf_htons(tinu_len);
-	tinuhdr_addr->udphdr.check = tcphdr_addr->check;
+	tinuhdr_addr->udphdr.len =
+	    bpf_htons((void *)(long)skb_addr->data_end - (void *)tcphdr_addr);
 	tinuhdr_addr->seq = tcphdr_addr->seq;
 	bpf_skb_store_bytes(skb_addr, (void *)tcphdr_addr - data_addr,
-			    tinuhdr_addr, tcp_hdr_len, 0);
+			    buffer, tcp_hdr_len, 0);
 
-	/* Change protocol from TCP to UDP on the IP header. Recompute packet's
-	 * checksum.
-	 */
+	/* Change protocol from TCP to UDP on the IP header. */
 	if (iphdr_addr) {
+		__u8 proto_old = IPPROTO_TCP;
+
 		bpf_skb_store_bytes(skb_addr,
-				    ((void *)iphdr_addr - data_addr) +
-				    offsetof(struct iphdr, protocol), &proto,
-				    sizeof(proto), BPF_F_RECOMPUTE_CSUM);
+				    (void *)&iphdr_addr->protocol - data_addr,
+				    &proto, sizeof(proto), 0);
+
+		bpf_l3_csum_replace(skb_addr,
+				    (void *)&iphdr_addr->check - data_addr,
+				    bpf_htons(proto_old), bpf_htons(proto), 2);
 	} else if (ipv6hdr_addr) {
 		bpf_skb_store_bytes(skb_addr,
-				    ((void *)ipv6hdr_addr - data_addr) +
-				    offsetof(struct ipv6hdr, nexthdr), &proto,
-				    sizeof(proto), BPF_F_RECOMPUTE_CSUM);
+				    (void *)&ipv6hdr_addr->nexthdr -
+				    data_addr, &proto, sizeof(proto), 0);
 	}
 }
 
@@ -164,7 +163,7 @@ int tc_action(struct __sk_buff *skb_addr, enum direction dir, enum side side)
 	switch (dir) {
 	case EGRESS:
 		if (l4_proto != IPPROTO_TCP)
-			break;
+			goto out;
 
 		tcphdr_addr = (struct tcphdr *)data_hdr_end_addr;
 		data_hdr_end_addr = (void *)tcphdr_addr + sizeof(struct tcphdr);
@@ -174,7 +173,8 @@ int tc_action(struct __sk_buff *skb_addr, enum direction dir, enum side side)
 		 * Offset is less than tcphdr structure length.
 		 */
 		if (data_hdr_end_addr > data_end_addr ||
-		    (tcphdr_addr->doff << 2) < sizeof(struct tcphdr))
+		    (tcphdr_addr->doff << 2) < sizeof(struct tcphdr) ||
+		    (tcphdr_addr->doff << 2) > TCP_MAX_HEADER)
 			goto out;
 
 		data_hdr_end_addr =
@@ -224,7 +224,7 @@ int tc_action(struct __sk_buff *skb_addr, enum direction dir, enum side side)
 		break;
 	case INGRESS:
 		if (l4_proto != IPPROTO_UDP)
-			break;
+			goto out;
 
 		tinuhdr_addr = (struct tinuhdr *)data_hdr_end_addr;
 		data_hdr_end_addr =
@@ -233,8 +233,13 @@ int tc_action(struct __sk_buff *skb_addr, enum direction dir, enum side side)
 		/* Exit if data address plus ethhdr, iphdr/ipv6hdr, & tinuhdr
 		 * structure lengths exceeds data end address.
 		 */
-		if (data_hdr_end_addr > data_end_addr)
+		if (data_hdr_end_addr > data_end_addr ||
+		    (tinuhdr_addr->doff << 2) < sizeof(struct tinuhdr) ||
+		    (tinuhdr_addr->doff << 2) > TCP_MAX_HEADER)
 			goto out;
+
+		data_hdr_end_addr =
+		    (void *)tinuhdr_addr + (tinuhdr_addr->doff << 2);
 
 		switch (side) {
 		case SERVER:
