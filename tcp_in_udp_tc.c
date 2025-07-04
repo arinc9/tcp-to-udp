@@ -39,6 +39,66 @@ enum direction {
 	INGRESS,
 };
 
+static __u16 ip_checksum(void *vdata, __u32 length)
+{
+	/* Cast the data to 16 bit chunks */
+	__u16 *data = vdata;
+	__u32 sum = 0;
+
+	while (length > 1) {
+		sum += *data++;
+		length -= 2;
+	}
+
+	/* Add left-over byte, if any */
+	if (length > 0)
+		sum += *(unsigned char *)data;
+
+	/* Fold 32-bit sum to 16 bits */
+	while (sum >> 16)
+		sum = (sum & 0xffff) + (sum >> 16);
+
+	return ~sum;
+}
+
+static __sum16 udp_checksum(struct iphdr *ip, struct udphdr *udp, int len)
+{
+	__sum16 csum;
+	int total_len;
+
+	struct pseudo_header {
+		__u32 source_address;
+		__u32 dest_address;
+		__u8 placeholder;
+		__u8 protocol;
+		__u16 length;
+	};
+
+	struct {
+		struct pseudo_header hdr;
+		unsigned char l4[1480];
+	} buffer;
+
+	/* Fill pseudo header */
+	buffer.hdr.source_address = ip->saddr;
+	buffer.hdr.dest_address = ip->daddr;
+	buffer.hdr.placeholder = 0;
+	buffer.hdr.protocol = IPPROTO_UDP;
+	buffer.hdr.length = bpf_htons(len);
+	udp->check = 0;
+
+	/* Allocate memory for the calculation */
+	total_len = sizeof(struct pseudo_header) + len;
+
+	/* Copy pseudo header, TCP header, and payload */
+	__builtin_memcpy(&buffer.l4[0], udp, len);
+
+	/* Calculate checksum */
+	csum = ip_checksum(&buffer, total_len);
+
+	return csum;
+}
+
 static __always_inline void tinu_to_tcp(struct __sk_buff *skb_addr,
 					struct iphdr *iphdr_addr,
 					struct ipv6hdr *ipv6hdr_addr,
@@ -79,18 +139,18 @@ static __always_inline void tcp_to_tinu(struct __sk_buff *skb_addr,
 {
 	int tcp_hdr_len = data_hdr_end_addr - (void *)tcphdr_addr;
 	void *data_addr = (void *)(long)skb_addr->data;
+	char tcp_hdr[TCP_MAX_HEADER];
 	struct tinuhdr *tinuhdr_addr;
-	char buffer[TCP_MAX_HEADER];
 	__u8 proto = IPPROTO_UDP;
 
-	bpf_skb_load_bytes(skb_addr, (void *)tcphdr_addr - data_addr, buffer,
+	bpf_skb_load_bytes(skb_addr, (void *)tcphdr_addr - data_addr, tcp_hdr,
 			   tcp_hdr_len);
-	tinuhdr_addr = (struct tinuhdr *)buffer;
+	tinuhdr_addr = (struct tinuhdr *)tcp_hdr;
 	tinuhdr_addr->udphdr.len =
 	    bpf_htons((void *)(long)skb_addr->data_end - (void *)tcphdr_addr);
 	tinuhdr_addr->seq = tcphdr_addr->seq;
 	bpf_skb_store_bytes(skb_addr, (void *)tcphdr_addr - data_addr,
-			    buffer, tcp_hdr_len, 0);
+			    tcp_hdr, tcp_hdr_len, 0);
 
 	/* Change protocol from TCP to UDP on the IP header. */
 	if (iphdr_addr) {
@@ -104,10 +164,14 @@ static __always_inline void tcp_to_tinu(struct __sk_buff *skb_addr,
 				    (void *)&iphdr_addr->check - data_addr,
 				    bpf_htons(proto_old), bpf_htons(proto), 2);
 
-	        __sum16 udp_check = bpf_htons(udp_checksum(skb_addr, iphdr_addr, tcphdr_addr, tcp_hdr_len));
+		__sum16 udp_check =
+		    bpf_htons(udp_checksum(iphdr_addr, (struct udphdr *)tcp_hdr,
+					   (void *)(long)skb_addr->data_end -
+					   (void *)iphdr_addr));
 
 		bpf_skb_store_bytes(skb_addr,
-				    (void *)&tcphdr_addr + offsetof(struct udphdr, check) - data_addr,
+				    (void *)&tcphdr_addr +
+				    offsetof(struct udphdr, check) - data_addr,
 				    &udp_check, sizeof(udp_check), 0);
 	} else if (ipv6hdr_addr) {
 		bpf_skb_store_bytes(skb_addr,
