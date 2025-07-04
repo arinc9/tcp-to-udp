@@ -103,6 +103,12 @@ static __always_inline void tcp_to_tinu(struct __sk_buff *skb_addr,
 		bpf_l3_csum_replace(skb_addr,
 				    (void *)&iphdr_addr->check - data_addr,
 				    bpf_htons(proto_old), bpf_htons(proto), 2);
+
+	        __sum16 udp_check = bpf_htons(udp_checksum(skb_addr, iphdr_addr, tcphdr_addr, tcp_hdr_len));
+
+		bpf_skb_store_bytes(skb_addr,
+				    (void *)&tcphdr_addr + offsetof(struct udphdr, check) - data_addr,
+				    &udp_check, sizeof(udp_check), 0);
 	} else if (ipv6hdr_addr) {
 		bpf_skb_store_bytes(skb_addr,
 				    (void *)&ipv6hdr_addr->nexthdr -
