@@ -78,10 +78,13 @@ static __always_inline void tcp_to_tinu(struct __sk_buff *skb_addr,
 					void *data_hdr_end_addr)
 {
 	int tcp_hdr_len = data_hdr_end_addr - (void *)tcphdr_addr;
+	char buffer[TCP_MAX_HEADER], buffer_cpy[TCP_MAX_HEADER];
 	void *data_addr = (void *)(long)skb_addr->data;
 	struct tinuhdr *tinuhdr_addr;
-	char buffer[TCP_MAX_HEADER];
 	__u8 proto = IPPROTO_UDP;
+
+	bpf_skb_load_bytes(skb_addr, (void *)tcphdr_addr - data_addr,
+			   buffer_cpy, tcp_hdr_len);
 
 	bpf_skb_load_bytes(skb_addr, (void *)tcphdr_addr - data_addr, buffer,
 			   tcp_hdr_len);
@@ -94,6 +97,10 @@ static __always_inline void tcp_to_tinu(struct __sk_buff *skb_addr,
 
 	/* Change protocol from TCP to UDP on the IP header. */
 	if (iphdr_addr) {
+		int udp_check_offset = ((void *)tcphdr_addr - data_addr) +
+		    offsetof(struct udphdr, check);
+		__u16 old_val = *(__u16 *)(buffer_cpy + 4);
+		__u16 new_val = *(__u16 *)(buffer + 4);
 		__u8 proto_old = IPPROTO_TCP;
 
 		bpf_skb_store_bytes(skb_addr,
@@ -103,6 +110,10 @@ static __always_inline void tcp_to_tinu(struct __sk_buff *skb_addr,
 		bpf_l3_csum_replace(skb_addr,
 				    (void *)&iphdr_addr->check - data_addr,
 				    bpf_htons(proto_old), bpf_htons(proto), 2);
+
+		bpf_l4_csum_replace(skb_addr,
+				    udp_check_offset,
+				    old_val, new_val, BPF_F_PSEUDO_HDR | 2);
 	} else if (ipv6hdr_addr) {
 		bpf_skb_store_bytes(skb_addr,
 				    (void *)&ipv6hdr_addr->nexthdr -
