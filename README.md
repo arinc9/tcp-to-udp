@@ -105,3 +105,43 @@ ethtool -K ${IFACE} gro off lro off gso off tso off ufo off sg off
 
 - Ingress: A specific dport in TCP-in-UDP
 - Egress: A specific sport in TCP
+
+## In Detail
+
+```
+tcphdr
+bit 0 - 15	Source Port
+bit 16 - 31	Destination Port
+bit 32 - 47	Sequence Number First Half
+bit 48 - 63	Sequence Number Second Half
+bit 64 - 79	Acknowledgment Number First Half
+bit 80 - 95	Acknowledgment Number Second Half
+bit 96 - 111	Data Offset and Flags
+bit 112 - 127	Window
+bit 128 - 143	Checksum
+bit 144 - 159	Urgent Pointer
+
+tcphdr to tinuhdr
+bit 0 - 15	Source Port
+bit 16 - 31	Destination Port
+bit 32 - 47	Length (A change, must be calculated)
+bit 48 - 63	Checksum (A change, nothing needed to do, BPF helper will calculate)
+bit 64 - 79	Acknowledgment Number First Half
+bit 80 - 95	Acknowledgment Number Second Half
+bit 96 - 111	Data Offset and Flags
+bit 112 - 127	Window
+bit 128 - 143	Sequence Number First Half (A change, read it from tcphdr_addr->seq)
+bit 144 - 159	Sequence Number Second Half (A change, read it from tcphdr_addr->seq)
+
+tinuhdr to tcphdr
+bit 0 - 15	Source Port
+bit 16 - 31	Destination Port
+bit 32 - 47	Sequence Number First Half (A change, read it from tinuhdr->seq)
+bit 48 - 63	Sequence Number Second Half (A change, read it from tinuhdr->seq)
+bit 64 - 79	Acknowledgment Number First Half
+bit 80 - 95	Acknowledgment Number Second Half
+bit 96 - 111	Data Offset and Flags
+bit 112 - 127	Window
+bit 128 - 143	Checksum (A change, nothing needed to do, BPF helper will calculate)
+bit 144 - 159	Urgent Pointer (A change, set it to 0)
+```
