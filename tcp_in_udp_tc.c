@@ -76,7 +76,7 @@ static __sum16 udp_checksum(struct iphdr *ip, struct udphdr *udp, int len)
 
 	struct {
 		struct pseudo_header hdr;
-		unsigned char l4[1480];
+		unsigned char ip_payload_max[1480];
 	} buffer;
 
 	/* Fill pseudo header */
@@ -90,8 +90,8 @@ static __sum16 udp_checksum(struct iphdr *ip, struct udphdr *udp, int len)
 	/* Allocate memory for the calculation */
 	total_len = sizeof(struct pseudo_header) + len;
 
-	/* Copy pseudo header, TCP header, and payload */
-	__builtin_memcpy(&buffer.l4[0], udp, len);
+	/* Copy pseudo header, UDP header, and payload */
+	__builtin_memcpy(&buffer.ip_payload_max[0], udp, len);
 
 	/* Calculate checksum */
 	csum = ip_checksum(&buffer, total_len);
@@ -137,6 +137,7 @@ static __always_inline void tcp_to_tinu(struct __sk_buff *skb_addr,
 					struct tcphdr *tcphdr_addr,
 					void *data_hdr_end_addr)
 {
+	int ip_payload_len = (void *)(long)skb_addr->data_end - (void *)tcphdr_addr;
 	int tcp_hdr_len = data_hdr_end_addr - (void *)tcphdr_addr;
 	void *data_addr = (void *)(long)skb_addr->data;
 	char tcp_hdr[TCP_MAX_HEADER];
@@ -146,8 +147,7 @@ static __always_inline void tcp_to_tinu(struct __sk_buff *skb_addr,
 	bpf_skb_load_bytes(skb_addr, (void *)tcphdr_addr - data_addr, tcp_hdr,
 			   tcp_hdr_len);
 	tinuhdr_addr = (struct tinuhdr *)tcp_hdr;
-	tinuhdr_addr->udphdr.len =
-	    bpf_htons((void *)(long)skb_addr->data_end - (void *)tcphdr_addr);
+	tinuhdr_addr->udphdr.len = bpf_htons(ip_payload_len);
 	tinuhdr_addr->seq = tcphdr_addr->seq;
 	bpf_skb_store_bytes(skb_addr, (void *)tcphdr_addr - data_addr,
 			    tcp_hdr, tcp_hdr_len, 0);
@@ -166,8 +166,7 @@ static __always_inline void tcp_to_tinu(struct __sk_buff *skb_addr,
 
 		__sum16 udp_check =
 		    bpf_htons(udp_checksum(iphdr_addr, (struct udphdr *)tcp_hdr,
-					   (void *)(long)skb_addr->data_end -
-					   (void *)iphdr_addr));
+					   ip_payload_len));
 
 		bpf_skb_store_bytes(skb_addr,
 				    (void *)&tcphdr_addr +
